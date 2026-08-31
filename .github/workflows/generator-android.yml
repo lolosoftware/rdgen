@@ -24,6 +24,7 @@ env:
   LLVM_VERSION: "15.0.6"
   FLUTTER_VERSION: "3.24.5"
   ANDROID_FLUTTER_VERSION: "3.24.5" 
+  ANDROID_KOTLIN_VERSION: "1.9.24"
   # for arm64 linux because official Dart SDK does not work
   FLUTTER_ELINUX_VERSION: "3.16.9"
   TAG_NAME: "${{ inputs.upload-tag }}"
@@ -187,6 +188,31 @@ jobs:
         with:
           repository: rustdesk/rustdesk
           submodules: recursive
+
+      - name: Align Android Kotlin Gradle plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SETTINGS_GRADLE=./flutter/android/settings.gradle
+          BUILD_GRADLE=./flutter/android/build.gradle
+
+          if grep -q 'id "org.jetbrains.kotlin.android" version' "$SETTINGS_GRADLE"; then
+            sed -E -i 's|(id "org\.jetbrains\.kotlin\.android" version ")[^"]+(" apply false)|\1${{ env.ANDROID_KOTLIN_VERSION }}\2|' "$SETTINGS_GRADLE"
+          elif grep -q "id 'org.jetbrains.kotlin.android' version" "$SETTINGS_GRADLE"; then
+            sed -E -i "s|(id 'org\.jetbrains\.kotlin\.android' version ')[^']+(' apply false)|\1${{ env.ANDROID_KOTLIN_VERSION }}\2|" "$SETTINGS_GRADLE"
+          elif grep -q 'ext.kotlin_version' "$BUILD_GRADLE"; then
+            sed -E -i "s|(ext\.kotlin_version[[:space:]]*=[[:space:]]*')[^']+(')|\1${{ env.ANDROID_KOTLIN_VERSION }}\2|" "$BUILD_GRADLE"
+          else
+            echo "::error::Unable to locate the Kotlin Gradle plugin version"
+            exit 1
+          fi
+
+          grep -R -n -E "org\.jetbrains\.kotlin\.android.*${{ env.ANDROID_KOTLIN_VERSION }}|ext\.kotlin_version.*${{ env.ANDROID_KOTLIN_VERSION }}" \
+            "$SETTINGS_GRADLE" "$BUILD_GRADLE" >/dev/null || {
+              echo "::error::Kotlin Gradle plugin was not updated to ${{ env.ANDROID_KOTLIN_VERSION }}"
+              exit 1
+            }
 
       - name: Install flutter
         uses: subosito/flutter-action@v2
@@ -520,8 +546,36 @@ jobs:
             exit 1
           }
 
-          printf '%s' "$SIGNING_KEY_BASE64" | base64 --decode > ./flutter/android/app/release.jks
+          printf '%s' "$SIGNING_KEY_BASE64" | base64 --decode > ./flutter/android/app/release.jks || {
+            echo "::error::ANDROID_SIGNING_KEY is not valid Base64"
+            exit 1
+          }
           chmod 600 ./flutter/android/app/release.jks
+
+          keytool -list \
+            -keystore ./flutter/android/app/release.jks \
+            -storepass "$SIGNING_STORE_PASSWORD" \
+            -alias "$SIGNING_ALIAS" >/dev/null || {
+              echo "::error::Unable to open the keystore. Check ANDROID_SIGNING_KEY, ANDROID_KEY_STORE_PASSWORD and ANDROID_ALIAS"
+              exit 1
+            }
+
+          VALIDATION_KEYSTORE="$RUNNER_TEMP/android-signing-validation.jks"
+          rm -f "$VALIDATION_KEYSTORE"
+          keytool -importkeystore -noprompt \
+            -srckeystore ./flutter/android/app/release.jks \
+            -srcstorepass "$SIGNING_STORE_PASSWORD" \
+            -srcalias "$SIGNING_ALIAS" \
+            -srckeypass "$SIGNING_KEY_PASSWORD" \
+            -destkeystore "$VALIDATION_KEYSTORE" \
+            -deststoretype JKS \
+            -deststorepass android-signing-validation \
+            -destkeypass android-signing-validation \
+            -destalias validation >/dev/null || {
+              echo "::error::Unable to unlock the signing key. Check ANDROID_KEY_PASSWORD"
+              exit 1
+            }
+          rm -f "$VALIDATION_KEYSTORE"
 
           {
             printf 'storeFile=release.jks\n'
