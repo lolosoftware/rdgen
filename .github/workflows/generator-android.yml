@@ -24,6 +24,7 @@ env:
   LLVM_VERSION: "15.0.6"
   FLUTTER_VERSION: "3.24.5"
   ANDROID_FLUTTER_VERSION: "3.24.5" 
+  ANDROID_KOTLIN_VERSION: "1.9.24"
   # for arm64 linux because official Dart SDK does not work
   FLUTTER_ELINUX_VERSION: "3.16.9"
   TAG_NAME: "${{ inputs.upload-tag }}"
@@ -187,6 +188,28 @@ jobs:
         with:
           repository: rustdesk/rustdesk
           submodules: recursive
+          
+      - name: Align Android Kotlin Gradle plugin
+        shell: bash
+        run: |
+          set -euo pipefail
+          SETTINGS_GRADLE=./flutter/android/settings.gradle
+          BUILD_GRADLE=./flutter/android/build.gradle
+          if grep -q 'id "org.jetbrains.kotlin.android" version' "$SETTINGS_GRADLE"; then
+            sed -E -i 's|(id "org\.jetbrains\.kotlin\.android" version ")[^"]+(" apply false)|\1${{ env.ANDROID_KOTLIN_VERSION }}\2|' "$SETTINGS_GRADLE"
+          elif grep -q "id 'org.jetbrains.kotlin.android' version" "$SETTINGS_GRADLE"; then
+            sed -E -i "s|(id 'org\.jetbrains\.kotlin\.android' version ')[^']+(' apply false)|\1${{ env.ANDROID_KOTLIN_VERSION }}\2|" "$SETTINGS_GRADLE"
+          elif grep -q 'ext.kotlin_version' "$BUILD_GRADLE"; then
+            sed -E -i "s|(ext\.kotlin_version[[:space:]]*=[[:space:]]*')[^']+(')|\1${{ env.ANDROID_KOTLIN_VERSION }}\2|" "$BUILD_GRADLE"
+          else
+            echo "::error::Unable to locate the Kotlin Gradle plugin version"
+            exit 1
+          fi
+          grep -R -n -E "org\.jetbrains\.kotlin\.android.*${{ env.ANDROID_KOTLIN_VERSION }}|ext\.kotlin_version.*${{ env.ANDROID_KOTLIN_VERSION }}" \
+            "$SETTINGS_GRADLE" "$BUILD_GRADLE" >/dev/null || {
+              echo "::error::Kotlin Gradle plugin was not updated to ${{ env.ANDROID_KOTLIN_VERSION }}"
+              exit 1
+            }          
 
       - name: Install flutter
         uses: subosito/flutter-action@v2
@@ -538,6 +561,66 @@ jobs:
           convert ./res/128x128.png -resize 200% ./flutter/assets/128x128@2x.png || true
           cp ./flutter/assets/icon.svg ./res/scalable.svg
 
+      - name: Configure Android release signing
+        shell: bash
+        env:
+          SIGNING_KEY_BASE64: ${{ secrets.ANDROID_SIGNING_KEY }}
+          SIGNING_ALIAS: ${{ secrets.ANDROID_ALIAS }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_KEY_STORE_PASSWORD }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$SIGNING_KEY_BASE64" || {
+            echo "::error::ANDROID_SIGNING_KEY is missing"
+            exit 1
+          }
+          test -n "$SIGNING_ALIAS" || {
+            echo "::error::ANDROID_ALIAS is missing"
+            exit 1
+          }
+          test -n "$SIGNING_STORE_PASSWORD" || {
+            echo "::error::ANDROID_KEY_STORE_PASSWORD is missing"
+            exit 1
+          }
+          test -n "$SIGNING_KEY_PASSWORD" || {
+            echo "::error::ANDROID_KEY_PASSWORD is missing"
+            exit 1
+          }
+          printf '%s' "$SIGNING_KEY_BASE64" | base64 --decode > ./flutter/android/app/release.jks || {
+            echo "::error::ANDROID_SIGNING_KEY is not valid Base64"
+            exit 1
+          }
+          chmod 600 ./flutter/android/app/release.jks
+          keytool -list \
+            -keystore ./flutter/android/app/release.jks \
+            -storepass "$SIGNING_STORE_PASSWORD" \
+            -alias "$SIGNING_ALIAS" >/dev/null || {
+              echo "::error::Unable to open the keystore. Check ANDROID_SIGNING_KEY, ANDROID_KEY_STORE_PASSWORD and ANDROID_ALIAS"
+              exit 1
+            }
+          VALIDATION_KEYSTORE="$RUNNER_TEMP/android-signing-validation.jks"
+          rm -f "$VALIDATION_KEYSTORE"
+          keytool -importkeystore -noprompt \
+            -srckeystore ./flutter/android/app/release.jks \
+            -srcstorepass "$SIGNING_STORE_PASSWORD" \
+            -srcalias "$SIGNING_ALIAS" \
+            -srckeypass "$SIGNING_KEY_PASSWORD" \
+            -destkeystore "$VALIDATION_KEYSTORE" \
+            -deststoretype JKS \
+            -deststorepass android-signing-validation \
+            -destkeypass android-signing-validation \
+            -destalias validation >/dev/null || {
+              echo "::error::Unable to unlock the signing key. Check ANDROID_KEY_PASSWORD"
+              exit 1
+            }
+          rm -f "$VALIDATION_KEYSTORE"
+          {
+            printf 'storeFile=release.jks\n'
+            printf 'storePassword=%s\n' "$SIGNING_STORE_PASSWORD"
+            printf 'keyAlias=%s\n' "$SIGNING_ALIAS"
+            printf 'keyPassword=%s\n' "$SIGNING_KEY_PASSWORD"
+          } > ./flutter/android/key.properties
+
       - name: Build rustdesk
         shell: bash
         env:
@@ -547,7 +630,7 @@ jobs:
           # Increase Gradle JVM memory for CI builds
           sed -i "s/org.gradle.jvmargs=-Xmx1024M/org.gradle.jvmargs=-Xmx2g/g" ./flutter/android/gradle.properties
           # temporary use debug sign config
-          sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
+          #desactivé le 06102026 => sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
           case ${{ matrix.job.target }} in
             aarch64-linux-android)
             mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
@@ -598,40 +681,28 @@ jobs:
           mkdir -p signed-apk; pushd signed-apk
           mv ../rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.apk ./${{ env.filename }}-${{ matrix.job.arch }}.apk
           popd
-      
-      - uses: r0adkll/sign-android-release@v1
-        name: Sign app APK
-        continue-on-error: true
-        if: env.ANDROID_SIGNING_KEY != null
-        id: sign-rustdesk
-        with:
-          releaseDirectory: ./signed-apk
-          signingKeyBase64: ${{ secrets.ANDROID_SIGNING_KEY }}
-          alias: ${{ secrets.ANDROID_ALIAS }}
-          keyStorePassword: ${{ secrets.ANDROID_KEY_STORE_PASSWORD }}
-          keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        env:
-          # override default build-tools version (29.0.3) -- optional
-          # 30.0.2 no longer ships on ubuntu-24.04 runners (34.0.0 does);
-          # missing dir made the sign step fail silently via continue-on-error
-          BUILD_TOOLS_VERSION: "34.0.0"
-
-      - name: Prefer signed APK when available
+          
+      - name: Verify Android release signature
         shell: bash
         run: |
-          # sign-android-release writes *-signed.apk next to the input but the
-          # send steps below use the plain name: promote the signed file so the
-          # server always receives the best available signature (release key
-          # when present, debug fallback otherwise). Server-side names unchanged.
-          plain="./signed-apk/${{ env.filename }}-${{ matrix.job.arch }}.apk"
-          signed="./signed-apk/${{ env.filename }}-${{ matrix.job.arch }}-signed.apk"
-          if [ -f "$signed" ]; then
-            mv "$signed" "$plain"
-            echo "Using release-signed APK: $plain"
-          else
-            echo "No signed APK found, keeping unsigned/debug APK: $plain"
-          fi
-          ls -l ./signed-apk/
+          set -euo pipefail
+          BUILD_TOOLS_VERSION="$({
+            find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d -printf '%f\n'
+          } | sort -V | tail -1)"
+          APKSIGNER="$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION/apksigner"
+          test -x "$APKSIGNER" || {
+            echo "::error::apksigner was not found"
+            exit 1
+          }
+          for apk in ./signed-apk/*.apk; do
+            echo "Verifying $apk"
+            CERT_INFO="$("$APKSIGNER" verify --verbose --print-certs "$apk")"
+            echo "$CERT_INFO"
+            if grep -qi "Android Debug" <<< "$CERT_INFO"; then
+              echo "::error::$apk is signed with an Android debug certificate"
+              exit 1
+            fi
+          done
 
       - name: send file to rdgen server
         if: ${{ env.rdgen == 'true' }}
