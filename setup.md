@@ -23,14 +23,36 @@
    * Now click New repository secret again
    * Set the Name to ZIP_PASSWORD
    * Set the Secret to any password you want (use this in the next step as well) - generate a password by running: ```python3 -c 'import secrets; print(secrets.token_hex(100))'```
-4. Now download the docker-compose.yml file and fill in the environment variables:
+4. Every push to `master` builds and publishes
+   `ghcr.io/USERNAME/rdgen:latest` with the GitHub Actions workflow. The first
+   published package is private by default. Either make it public from the
+   package settings, or log in on the server with a classic personal access
+   token that has the `read:packages` permission:
+
+   ```bash
+   echo "YOUR_GITHUB_TOKEN" | docker login ghcr.io -u USERNAME --password-stdin
+   ```
+
+5. Download the docker-compose.yml file, replace `USERNAME` in the image name
+   if needed, and fill in the environment variables:
   * SECRET_KEY="your secret key" - generate a secret key by running: ```python3 -c 'import secrets; print(secrets.token_hex(100))'```
   * GHUSER="your github username"  
   * GHBEARER="your fine-grained access token"  
   * ZIP_PASSWORD="the same password that you entered as a github secret"
   * PROTOCOL="https" *optional - defaults to "https", change to "http" if you need to
   * REPONAME="rdgen" *optional - defaults to "rdgen", change this if you renamed the repo when you forked it
-5. Now just run ```docker compose up -d```
+6. Start the service:
+
+   ```bash
+   docker compose up -d
+   ```
+
+   To deploy the latest image after another push to `master`:
+
+   ```bash
+   docker compose pull
+   docker compose up -d
+   ```
 
 
 ## Use a self hosted github runner for faster client generation (Windows only right now)
