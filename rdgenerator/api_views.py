@@ -20,12 +20,17 @@ PERMISSIONS_TYPE_CHOICES = ['custom', 'full', 'view']
 
 # Boolean fields
 BOOL_FIELDS = [
-    'delayFix', 'xOffline', 'hidecm', 'removeNewVersionNotif',
+    'delayFix', 'ossRendezvousNoToken', 'xOffline', 'hidecm', 'removeNewVersionNotif',
     'denyLan', 'enableDirectIP', 'autoClose',
     'enableKeyboard', 'enableClipboard', 'enableFileTransfer', 'enableAudio',
     'enableTCP', 'enableRemoteRestart', 'enableRecording', 'enableBlockingInput',
     'enableRemoteModi', 'removeWallpaper', 'enablePrinter', 'enableCamera', 'enableTerminal',
 ]
+
+BOOL_DEFAULTS = {
+    'delayFix': True,
+    'ossRendezvousNoToken': True,
+}
 
 # Optional string fields (no validation needed, just accept as-is)
 OPTIONAL_STR_FIELDS = [
@@ -78,7 +83,7 @@ def validate_generate_params(data):
 
     # Boolean fields
     for field in BOOL_FIELDS:
-        value = data.get(field, False)
+        value = data.get(field, BOOL_DEFAULTS.get(field, False))
         
         if isinstance(value, str) and value.lower() == 'on':
             value = True

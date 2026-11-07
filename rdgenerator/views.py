@@ -52,6 +52,7 @@ def generate_custom_client(params, full_url):
     # without changing the git tag that version selects. If left empty, the
     # RustDesk build's own version (from the checked-out tag) is used.
     delayFix = params.get('delayFix', True)
+    ossRendezvousNoToken = params.get('ossRendezvousNoToken', True)
     xOffline = params.get('xOffline', False)
     hidecm = params.get('hidecm', False)
     removeNewVersionNotif = params.get('removeNewVersionNotif', False)
@@ -289,6 +290,7 @@ def generate_custom_client(params, full_url):
         "urlLink":urlLink,
         "downloadLink":downloadLink,
         "delayFix": 'true' if delayFix else 'false',
+        "ossRendezvousNoToken": 'true' if ossRendezvousNoToken else 'false',
         "rdgen":'true',
         "xOffline": 'true' if xOffline else 'false',
         "removeNewVersionNotif": 'true' if removeNewVersionNotif else 'false',
