@@ -732,6 +732,23 @@ jobs:
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v2
 
+      - name: Disable MSI feature state migration
+        if: env.UPLOAD_ARTIFACT == 'true'
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("res/msi/preprocess.py")
+          source = path.read_text(encoding="utf-8")
+          anchor = 'MigrateFeatures="yes"'
+          matches = source.count(anchor)
+          if matches != 1:
+              raise SystemExit(
+                  f"Expected exactly one MSI feature migration setting, found {matches}"
+              )
+          path.write_text(source.replace(anchor, 'MigrateFeatures="no"'), encoding="utf-8")
+          print("MSI feature state migration disabled")
+
       - name: Build msi
         continue-on-error: true
         if: env.UPLOAD_ARTIFACT == 'true'
